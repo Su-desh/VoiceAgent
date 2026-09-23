@@ -84,7 +84,7 @@ class ChatService:
 
                 # Provide function response back to Gemini to complete sentence
                 tool_content = types.Content(
-                    role="tool",
+                    role="user",
                     parts=[
                         types.Part.from_function_response(
                             name=call_name,
