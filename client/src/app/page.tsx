@@ -7,6 +7,7 @@ import { ProductSpotlight } from '@/components/ProductSpotlight';
 import { FestiveCart } from '@/components/FestiveCart';
 import { LiveTranscript } from '@/components/LiveTranscript';
 import { useVoiceAgent } from '@/hooks/useVoiceAgent';
+import { getApiUrl } from '@/lib/apiConfig';
 import { 
   Sparkles, 
   ShoppingBag, 
@@ -196,7 +197,7 @@ export default function Home() {
 
   // Load products from server if available
   useEffect(() => {
-    fetch('http://localhost:8000/api/catalog')
+    fetch(`${getApiUrl()}/api/catalog`)
       .then((res) => res.json())
       .then((data) => {
         if (data.products && Array.isArray(data.products)) {

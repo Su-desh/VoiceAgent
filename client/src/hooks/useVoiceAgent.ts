@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { AgentState, Message, CartSummary, Product } from '@/types';
+import { getApiUrl, getWsUrl } from '@/lib/apiConfig';
 
 interface UseVoiceAgentProps {
   onSpotlightProduct: (product: Product) => void;
@@ -308,8 +309,7 @@ export function useVoiceAgent({
 
     const connectWebSocket = () => {
       if (typeof window === 'undefined') return;
-      const host = window.location.hostname || 'localhost';
-      const wsUrl = `ws://${host}:8000/ws/live/default`;
+      const wsUrl = getWsUrl('default');
 
       try {
         ws = new WebSocket(wsUrl);
@@ -425,8 +425,7 @@ export function useVoiceAgent({
         );
       } else {
         try {
-          const host = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
-          const res = await fetch(`http://${host}:8000/api/chat`, {
+          const res = await fetch(`${getApiUrl()}/api/chat`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -731,8 +730,7 @@ export function useVoiceAgent({
 
     // Call REST endpoint as well to guarantee reset
     try {
-      const host = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
-      await fetch(`http://${host}:8000/api/session/reset`, {
+      await fetch(`${getApiUrl()}/api/session/reset`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ session_id: 'default' })
