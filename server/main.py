@@ -35,6 +35,16 @@ class ActionRequest(BaseModel):
     args: Dict[str, Any]
     session_id: Optional[str] = "default"
 
+@app.get("/")
+def root():
+    return {
+        "status": "online",
+        "service": "Shubh Diwali AI Voice Sales Agent",
+        "docs": "/docs",
+        "health": "/health",
+        "catalog": "/api/catalog"
+    }
+
 @app.get("/health")
 def health_check():
     return {
