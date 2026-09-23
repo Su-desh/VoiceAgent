@@ -170,6 +170,7 @@ export default function Home() {
   const {
     state,
     audioLevel,
+    interimText,
     messages,
     continuousMode,
     toggleContinuousMode,
@@ -325,12 +326,20 @@ export default function Home() {
         </p>
 
         {/* Central Golden Diya Audio Visualizer */}
-        <div className="my-6">
+        <div className="my-6 flex flex-col items-center">
           <AudioVisualizer
             state={state}
             audioLevel={audioLevel}
             onClick={toggleListening}
           />
+
+          {/* Live Speech Interim Transcription Bubble */}
+          {interimText && (
+            <div className="mt-3 px-4 py-2 rounded-2xl bg-slate-900/90 border border-amber-400/60 shadow-lg shadow-amber-900/30 text-amber-200 text-xs font-medium flex items-center gap-2 animate-in fade-in zoom-in-95 max-w-md">
+              <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping flex-shrink-0" />
+              <span className="italic truncate">&ldquo;{interimText}&rdquo;</span>
+            </div>
+          )}
         </div>
 
         {/* Voice Trigger Buttons & Continuous Dialogue Toggle */}

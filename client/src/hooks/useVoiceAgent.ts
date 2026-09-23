@@ -18,6 +18,7 @@ export function useVoiceAgent({
 }: UseVoiceAgentProps) {
   const [state, setState] = useState<AgentState>('idle');
   const [audioLevel, setAudioLevel] = useState<number>(0);
+  const [interimText, setInterimText] = useState<string>('');
   const [messages, setMessages] = useState<Message[]>([
     {
       id: 'welcome',
@@ -47,19 +48,24 @@ export function useVoiceAgent({
     };
   }, [onSpotlightProduct, onUpdateCart, onOpenCheckout, onCouponApplied]);
 
-  // Audio Context & WebSocket refs
+  // Audio Context & Scheduling refs
   const wsRef = useRef<WebSocket | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
-  const audioQueueRef = useRef<AudioBuffer[]>([]);
+  const nextScheduledTimeRef = useRef<number>(0);
   const isPlayingRef = useRef<boolean>(false);
-  const currentSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  const activeSourcesRef = useRef<AudioBufferSourceNode[]>([]);
   const recognitionRef = useRef<any>(null);
   const isListeningRef = useRef<boolean>(false);
+  const completionTimerRef = useRef<any>(null);
+
   const messagesRef = useRef<Message[]>(messages);
   messagesRef.current = messages;
 
   const continuousModeRef = useRef<boolean>(continuousMode);
   continuousModeRef.current = continuousMode;
+
+  const stateRef = useRef<AgentState>(state);
+  stateRef.current = state;
 
   // Helper to append message
   const appendMessage = useCallback((sender: 'user' | 'agent' | 'system', text: string, toolCall?: string) => {
@@ -88,7 +94,6 @@ export function useVoiceAgent({
     utterance.pitch = 0.92; // Slightly deeper, natural male pitch
     utterance.lang = 'en-IN';
 
-    // Prioritize MALE English / Indian voices for Aarav
     const voices = window.speechSynthesis.getVoices();
     const isMale = (v: SpeechSynthesisVoice) => {
       const name = v.name.toLowerCase();
@@ -129,23 +134,25 @@ export function useVoiceAgent({
     }
 
     utterance.onstart = () => {
+      isPlayingRef.current = true;
       setState('speaking');
       setAudioLevel(0.65);
     };
 
     utterance.onend = () => {
+      isPlayingRef.current = false;
       setAudioLevel(0);
       if (continuousModeRef.current) {
-        // Automatically resume listening for user response after Aarav finishes speaking
         setTimeout(() => {
           startListeningRef.current();
-        }, 400);
+        }, 350);
       } else {
         setState('idle');
       }
     };
 
     utterance.onerror = () => {
+      isPlayingRef.current = false;
       setAudioLevel(0);
       setState('idle');
     };
@@ -171,66 +178,16 @@ export function useVoiceAgent({
     }
   }, []);
 
-  // Audio playback queue worker for 24kHz Gemini Live audio
-  const playNextAudioChunk = useCallback(() => {
-    if (audioQueueRef.current.length === 0 || !audioContextRef.current) {
-      isPlayingRef.current = false;
-      setAudioLevel(0);
-      if (continuousModeRef.current) {
-        setTimeout(() => {
-          startListeningRef.current();
-        }, 400);
-      } else {
-        setState((prev) => (prev === 'speaking' ? 'idle' : prev));
-      }
-      return;
-    }
-
-    isPlayingRef.current = true;
-    setState('speaking');
-
-    const buffer = audioQueueRef.current.shift()!;
-    const ctx = audioContextRef.current;
-    const source = ctx.createBufferSource();
-    source.buffer = buffer;
-    currentSourceRef.current = source;
-
-    const analyser = ctx.createAnalyser();
-    analyser.fftSize = 64;
-    source.connect(analyser);
-    analyser.connect(ctx.destination);
-
-    const dataArray = new Uint8Array(analyser.frequencyBinCount);
-    let animId: number;
-    const checkAudioLevel = () => {
-      if (!isPlayingRef.current) return;
-      analyser.getByteFrequencyData(dataArray);
-      let sum = 0;
-      for (let i = 0; i < dataArray.length; i++) {
-        sum += dataArray[i];
-      }
-      const avg = sum / dataArray.length / 255;
-      setAudioLevel(avg);
-      animId = requestAnimationFrame(checkAudioLevel);
-    };
-    animId = requestAnimationFrame(checkAudioLevel);
-
-    source.onended = () => {
-      cancelAnimationFrame(animId);
-      currentSourceRef.current = null;
-      playNextAudioChunk();
-    };
-
-    source.start();
-  }, []);
-
-  // Enqueue 24kHz raw PCM from base64 string
-  const enqueueAudioChunk = useCallback((base64Data: string, sampleRate = 24000) => {
+  // Schedule raw 24kHz PCM chunk with time-scheduled jitter buffer
+  const scheduleAudioChunk = useCallback((base64Data: string, sampleRate = 24000) => {
     try {
       if (!audioContextRef.current) {
         audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
       }
       const ctx = audioContextRef.current;
+      if (ctx.state === 'suspended') {
+        ctx.resume();
+      }
 
       const binaryStr = window.atob(base64Data);
       const len = binaryStr.length;
@@ -248,27 +205,86 @@ export function useVoiceAgent({
       const audioBuffer = ctx.createBuffer(1, float32Array.length, sampleRate);
       audioBuffer.getChannelData(0).set(float32Array);
 
-      audioQueueRef.current.push(audioBuffer);
+      const source = ctx.createBufferSource();
+      source.buffer = audioBuffer;
 
-      if (!isPlayingRef.current) {
-        playNextAudioChunk();
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 64;
+      source.connect(analyser);
+      analyser.connect(ctx.destination);
+
+      // Start time scheduling
+      const now = ctx.currentTime;
+      if (nextScheduledTimeRef.current < now) {
+        nextScheduledTimeRef.current = now;
       }
+      const startTime = nextScheduledTimeRef.current;
+      source.start(startTime);
+      nextScheduledTimeRef.current = startTime + audioBuffer.duration;
+
+      isPlayingRef.current = true;
+      setState('speaking');
+      activeSourcesRef.current.push(source);
+
+      // Monitor audio level
+      setAudioLevel(0.7);
+
+      source.onended = () => {
+        activeSourcesRef.current = activeSourcesRef.current.filter((s) => s !== source);
+      };
     } catch (err) {
-      console.error('Error decoding audio chunk:', err);
+      console.error('Error scheduling audio chunk:', err);
     }
-  }, [playNextAudioChunk]);
+  }, []);
+
+  // Handle Gemini Turn Complete
+  const onGeminiTurnComplete = useCallback(() => {
+    if (!audioContextRef.current) {
+      isPlayingRef.current = false;
+      setAudioLevel(0);
+      if (continuousModeRef.current) {
+        setTimeout(() => startListeningRef.current(), 350);
+      } else {
+        setState('idle');
+      }
+      return;
+    }
+
+    const ctx = audioContextRef.current;
+    const remainingTime = Math.max(0, nextScheduledTimeRef.current - ctx.currentTime);
+    const delayMs = Math.round(remainingTime * 1000) + 350;
+
+    if (completionTimerRef.current) {
+      clearTimeout(completionTimerRef.current);
+    }
+
+    completionTimerRef.current = setTimeout(() => {
+      isPlayingRef.current = false;
+      setAudioLevel(0);
+      if (continuousModeRef.current) {
+        startListeningRef.current();
+      } else {
+        setState('idle');
+      }
+    }, delayMs);
+  }, []);
 
   // Stop / interrupt playing audio
   const stopPlayback = useCallback(() => {
-    audioQueueRef.current = [];
-    if (currentSourceRef.current) {
+    if (completionTimerRef.current) {
+      clearTimeout(completionTimerRef.current);
+      completionTimerRef.current = null;
+    }
+    activeSourcesRef.current.forEach((s) => {
       try {
-        currentSourceRef.current.stop();
+        s.stop();
       } catch (e) {
         // ignore
       }
-      currentSourceRef.current = null;
-    }
+    });
+    activeSourcesRef.current = [];
+    nextScheduledTimeRef.current = 0;
+
     if (typeof window !== 'undefined' && window.speechSynthesis) {
       window.speechSynthesis.cancel();
     }
@@ -303,7 +319,7 @@ export function useVoiceAgent({
             const data = JSON.parse(event.data);
 
             if (data.type === 'AUDIO_CHUNK' && data.data) {
-              enqueueAudioChunk(data.data, data.rate || 24000);
+              scheduleAudioChunk(data.data, data.rate || 24000);
             } else if (data.type === 'AGENT_TEXT' && data.text) {
               appendMessage('agent', data.text);
             } else if (data.type === 'AGENT_RESPONSE' && data.text) {
@@ -319,6 +335,8 @@ export function useVoiceAgent({
               handleUiEvent(data.event);
             } else if (data.type === 'INTERRUPTED') {
               stopPlayback();
+            } else if (data.type === 'TURN_COMPLETE') {
+              onGeminiTurnComplete();
             } else if (data.type === 'SYSTEM_INFO') {
               console.log('Voice Concierge info:', data.message);
             }
@@ -351,7 +369,7 @@ export function useVoiceAgent({
         ws.close();
       }
     };
-  }, [enqueueAudioChunk, handleUiEvent, appendMessage, speakText, stopPlayback]);
+  }, [scheduleAudioChunk, onGeminiTurnComplete, handleUiEvent, appendMessage, speakText, stopPlayback]);
 
   // Send a prompt to Aarav (multi-turn conversation)
   const sendUserPrompt = useCallback(
@@ -361,8 +379,8 @@ export function useVoiceAgent({
       stopPlayback();
       appendMessage('user', promptText);
       setState('thinking');
+      setInterimText('');
 
-      // Build context history from previous turns
       const history = messagesRef.current
         .filter((m) => m.sender === 'user' || m.sender === 'agent')
         .slice(-8)
@@ -380,7 +398,6 @@ export function useVoiceAgent({
           })
         );
       } else {
-        // Direct REST fallback
         try {
           const host = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
           const res = await fetch(`http://${host}:8000/api/chat`, {
@@ -410,11 +427,13 @@ export function useVoiceAgent({
     [stopPlayback, appendMessage, handleUiEvent, speakText]
   );
 
-  // Start Microphone capture
+  // Start Microphone capture with auto-recovery from no-speech
   const startListening = useCallback(() => {
-    stopPlayback();
+    if (isPlayingRef.current) return; // Don't listen while agent is speaking
+
     setState('listening');
     isListeningRef.current = true;
+    setInterimText('');
 
     if (typeof window !== 'undefined') {
       const SpeechRecognition =
@@ -431,7 +450,7 @@ export function useVoiceAgent({
         const recognition = new SpeechRecognition();
         recognitionRef.current = recognition;
         recognition.continuous = false;
-        recognition.interimResults = false;
+        recognition.interimResults = true; // Show words as user speaks
         recognition.lang = 'en-IN';
 
         recognition.onstart = () => {
@@ -440,26 +459,64 @@ export function useVoiceAgent({
         };
 
         recognition.onresult = (event: any) => {
-          const transcript = event.results[0][0].transcript;
-          if (transcript) {
+          let interim = '';
+          let final = '';
+
+          for (let i = event.resultIndex; i < event.results.length; ++i) {
+            if (event.results[i].isFinal) {
+              final += event.results[i][0].transcript;
+            } else {
+              interim += event.results[i][0].transcript;
+            }
+          }
+
+          if (interim) {
+            setInterimText(interim);
+          }
+
+          if (final.trim()) {
             isListeningRef.current = false;
-            sendUserPrompt(transcript);
+            setInterimText('');
+            sendUserPrompt(final.trim());
           }
         };
 
         recognition.onerror = (e: any) => {
+          if (e.error === 'no-speech') {
+            // User just paused to think! If in continuous mode and agent not speaking, auto-resume
+            setInterimText('');
+            if (continuousModeRef.current && !isPlayingRef.current) {
+              setTimeout(() => {
+                if (continuousModeRef.current && !isPlayingRef.current) {
+                  startListening();
+                }
+              }, 200);
+            }
+            return;
+          }
+          if (e.error === 'aborted') {
+            return;
+          }
           console.warn('Speech recognition status:', e.error);
           isListeningRef.current = false;
           setAudioLevel(0);
-          if (e.error !== 'no-speech') {
-            setState('idle');
-          }
+          setInterimText('');
+          setState('idle');
         };
 
         recognition.onend = () => {
           isListeningRef.current = false;
           setAudioLevel(0);
-          setState((prev) => (prev === 'listening' ? 'idle' : prev));
+          // If ended without speech and continuous mode active, seamlessly restart
+          if (continuousModeRef.current && !isPlayingRef.current && stateRef.current === 'listening') {
+            setTimeout(() => {
+              if (continuousModeRef.current && !isPlayingRef.current) {
+                startListening();
+              }
+            }, 200);
+          } else if (!isPlayingRef.current && stateRef.current !== 'thinking') {
+            setState('idle');
+          }
         };
 
         try {
@@ -470,12 +527,13 @@ export function useVoiceAgent({
         }
       }
     }
-  }, [stopPlayback, sendUserPrompt]);
+  }, [sendUserPrompt]);
 
   startListeningRef.current = startListening;
 
   const stopListening = useCallback(() => {
     isListeningRef.current = false;
+    setInterimText('');
     if (recognitionRef.current) {
       try {
         recognitionRef.current.abort();
@@ -491,17 +549,26 @@ export function useVoiceAgent({
     if (state === 'listening') {
       stopListening();
     } else {
+      stopPlayback();
       startListening();
     }
-  }, [state, startListening, stopListening]);
+  }, [state, startListening, stopListening, stopPlayback]);
 
   const toggleContinuousMode = useCallback(() => {
-    setContinuousMode((prev) => !prev);
-  }, []);
+    setContinuousMode((prev) => {
+      const next = !prev;
+      continuousModeRef.current = next;
+      if (!next && state === 'listening') {
+        stopListening();
+      }
+      return next;
+    });
+  }, [state, stopListening]);
 
   return {
     state,
     audioLevel,
+    interimText,
     messages,
     isConnected,
     isMuted,
