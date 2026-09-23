@@ -109,10 +109,15 @@ export const AudioVisualizer: React.FC<AudioVisualizerProps> = ({ state, audioLe
   const getStatusBadge = () => {
     switch (state) {
       case 'listening':
-        return (
+        return audioLevel > 0.12 ? (
+          <div className="flex items-center gap-2 px-4 py-1.5 rounded-full bg-emerald-500/25 border border-emerald-400 text-emerald-300 text-sm font-semibold animate-pulse shadow-lg shadow-emerald-950/40">
+            <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping flex-shrink-0" />
+            <span>Hearing your voice...</span>
+          </div>
+        ) : (
           <div className="flex items-center gap-2 px-4 py-1.5 rounded-full bg-amber-500/20 border border-amber-400/40 text-amber-300 text-sm font-medium animate-pulse shadow-lg shadow-amber-900/30">
             <Mic className="w-4 h-4 text-amber-400" />
-            <span>Listening to you...</span>
+            <span>Listening... Speak anytime</span>
           </div>
         );
       case 'thinking':

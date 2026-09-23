@@ -51,6 +51,10 @@ export function useVoiceAgent({
   // Audio Context & Scheduling refs
   const wsRef = useRef<WebSocket | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
+  const micStreamRef = useRef<MediaStream | null>(null);
+  const micAnalyserRef = useRef<AnalyserNode | null>(null);
+  const micAnimFrameRef = useRef<number | null>(null);
+
   const nextScheduledTimeRef = useRef<number>(0);
   const isPlayingRef = useRef<boolean>(false);
   const activeSourcesRef = useRef<AudioBufferSourceNode[]>([]);
@@ -59,6 +63,8 @@ export function useVoiceAgent({
   const completionTimerRef = useRef<any>(null);
   const lastAudioPacketTimeRef = useRef<number>(0);
   const thinkingStartTimeRef = useRef<number>(0);
+  const silenceTimeoutRef = useRef<any>(null);
+  const accumulatedSpeechRef = useRef<string>('');
 
   const messagesRef = useRef<Message[]>(messages);
   messagesRef.current = messages;
@@ -93,7 +99,7 @@ export function useVoiceAgent({
 
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.rate = 1.0;
-    utterance.pitch = 0.92; // Slightly deeper, natural male pitch
+    utterance.pitch = 0.92; // Natural male timbre
     utterance.lang = 'en-IN';
 
     const voices = window.speechSynthesis.getVoices();
@@ -215,7 +221,6 @@ export function useVoiceAgent({
       source.connect(analyser);
       analyser.connect(ctx.destination);
 
-      // Start time scheduling
       const now = ctx.currentTime;
       if (nextScheduledTimeRef.current < now) {
         nextScheduledTimeRef.current = now;
@@ -228,8 +233,6 @@ export function useVoiceAgent({
       lastAudioPacketTimeRef.current = Date.now();
       setState('speaking');
       activeSourcesRef.current.push(source);
-
-      // Monitor audio level
       setAudioLevel(0.7);
 
       source.onended = () => {
@@ -293,7 +296,6 @@ export function useVoiceAgent({
     }
     isPlayingRef.current = false;
     setAudioLevel(0);
-    setState('idle');
   }, []);
 
   // Connect to backend WebSocket once on mount
@@ -380,10 +382,19 @@ export function useVoiceAgent({
       if (!promptText.trim()) return;
 
       stopPlayback();
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.stop();
+        } catch (e) {
+          // ignore
+        }
+      }
+
       appendMessage('user', promptText);
       thinkingStartTimeRef.current = Date.now();
       setState('thinking');
       setInterimText('');
+      accumulatedSpeechRef.current = '';
 
       const history = messagesRef.current
         .filter((m) => m.sender === 'user' || m.sender === 'agent')
@@ -431,21 +442,83 @@ export function useVoiceAgent({
     [stopPlayback, appendMessage, handleUiEvent, speakText]
   );
 
-  // Start Microphone capture with auto-recovery from no-speech
-  const startListening = useCallback(() => {
-    if (isPlayingRef.current) return; // Don't listen while agent is speaking
+  // Monitor real mic volume level in an animation loop
+  const startMicVolumeMonitor = useCallback(() => {
+    if (micAnimFrameRef.current) {
+      cancelAnimationFrame(micAnimFrameRef.current);
+    }
+
+    const checkVolume = () => {
+      if (stateRef.current !== 'listening') {
+        setAudioLevel(0);
+        return;
+      }
+
+      if (micAnalyserRef.current) {
+        const dataArray = new Uint8Array(micAnalyserRef.current.frequencyBinCount);
+        micAnalyserRef.current.getByteFrequencyData(dataArray);
+        let sum = 0;
+        for (let i = 0; i < dataArray.length; i++) {
+          sum += dataArray[i];
+        }
+        const avg = Math.min(1, (sum / dataArray.length) / 80);
+        // Add minimal ambient pulse (0.1) so user knows mic is active
+        setAudioLevel(Math.max(0.08, avg));
+      } else {
+        setAudioLevel(0.2);
+      }
+
+      micAnimFrameRef.current = requestAnimationFrame(checkVolume);
+    };
+
+    micAnimFrameRef.current = requestAnimationFrame(checkVolume);
+  }, []);
+
+  // Start Continuous Microphone capture with real audio level metering
+  const startListening = useCallback(async () => {
+    if (isPlayingRef.current) return;
 
     setState('listening');
     isListeningRef.current = true;
     setInterimText('');
+    accumulatedSpeechRef.current = '';
 
+    // Initialize real microphone stream for audio level visualizer
+    if (typeof window !== 'undefined' && navigator.mediaDevices && !micStreamRef.current) {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+        });
+        micStreamRef.current = stream;
+
+        if (!audioContextRef.current) {
+          audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+        }
+        const ctx = audioContextRef.current;
+        if (ctx.state === 'suspended') {
+          await ctx.resume();
+        }
+
+        const source = ctx.createMediaStreamSource(stream);
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 64;
+        source.connect(analyser);
+        micAnalyserRef.current = analyser;
+      } catch (e) {
+        console.warn('Could not open mic volume analyzer, using fallback visualization:', e);
+      }
+    }
+
+    startMicVolumeMonitor();
+
+    // Initialize Continuous Speech Recognition
     if (typeof window !== 'undefined') {
       const SpeechRecognition =
         (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
       if (SpeechRecognition) {
         if (recognitionRef.current) {
           try {
-            recognitionRef.current.abort();
+            recognitionRef.current.stop();
           } catch (e) {
             // ignore
           }
@@ -453,13 +526,12 @@ export function useVoiceAgent({
 
         const recognition = new SpeechRecognition();
         recognitionRef.current = recognition;
-        recognition.continuous = false;
-        recognition.interimResults = true; // Show words as user speaks
+        recognition.continuous = true; // Continuous listening - no 5-second dropouts!
+        recognition.interimResults = true;
         recognition.lang = 'en-IN';
 
         recognition.onstart = () => {
           setState('listening');
-          setAudioLevel(0.4);
         };
 
         recognition.onresult = (event: any) => {
@@ -467,80 +539,81 @@ export function useVoiceAgent({
           let final = '';
 
           for (let i = event.resultIndex; i < event.results.length; ++i) {
+            const transcript = event.results[i][0].transcript;
             if (event.results[i].isFinal) {
-              final += event.results[i][0].transcript;
+              final += transcript + ' ';
             } else {
-              interim += event.results[i][0].transcript;
+              interim += transcript;
             }
           }
 
-          if (interim) {
-            setInterimText(interim);
+          if (final) {
+            accumulatedSpeechRef.current = (accumulatedSpeechRef.current + ' ' + final).trim();
           }
 
-          if (final.trim()) {
-            isListeningRef.current = false;
-            setInterimText('');
-            sendUserPrompt(final.trim());
+          const currentText = (accumulatedSpeechRef.current + ' ' + interim).trim();
+          if (currentText) {
+            setInterimText(currentText);
           }
+
+          // Debounce: when user pauses for 900ms after speaking, send prompt!
+          if (silenceTimeoutRef.current) {
+            clearTimeout(silenceTimeoutRef.current);
+          }
+
+          silenceTimeoutRef.current = setTimeout(() => {
+            const textToSend = (accumulatedSpeechRef.current + ' ' + interim).trim();
+            if (textToSend && isListeningRef.current) {
+              isListeningRef.current = false;
+              sendUserPrompt(textToSend);
+            }
+          }, 900);
         };
 
         recognition.onerror = (e: any) => {
-          if (e.error === 'no-speech') {
-            // User just paused to think! If in continuous mode and agent not speaking, auto-resume
-            setInterimText('');
-            if (continuousModeRef.current && !isPlayingRef.current) {
-              setTimeout(() => {
-                if (continuousModeRef.current && !isPlayingRef.current) {
-                  startListening();
-                }
-              }, 200);
-            }
+          if (e.error === 'no-speech' || e.error === 'aborted') {
             return;
           }
-          if (e.error === 'aborted') {
-            return;
-          }
-          console.warn('Speech recognition status:', e.error);
-          isListeningRef.current = false;
-          setAudioLevel(0);
-          setInterimText('');
-          setState('idle');
+          console.warn('Speech recognition warning:', e.error);
         };
 
         recognition.onend = () => {
-          isListeningRef.current = false;
-          setAudioLevel(0);
-          // If ended without speech and continuous mode active, seamlessly restart
+          // If in continuous mode and still supposed to be listening, keep it open!
           if (continuousModeRef.current && !isPlayingRef.current && stateRef.current === 'listening') {
-            setTimeout(() => {
-              if (continuousModeRef.current && !isPlayingRef.current) {
-                startListening();
-              }
-            }, 200);
-          } else if (!isPlayingRef.current && stateRef.current !== 'thinking') {
-            setState('idle');
+            try {
+              recognition.start();
+            } catch (err) {
+              // ignore already running
+            }
           }
         };
 
         try {
           recognition.start();
         } catch (e) {
-          console.warn('Could not start recognition:', e);
-          setState('idle');
+          console.warn('SpeechRecognition start notice:', e);
         }
       }
     }
-  }, [sendUserPrompt]);
+  }, [sendUserPrompt, startMicVolumeMonitor]);
 
   startListeningRef.current = startListening;
 
   const stopListening = useCallback(() => {
     isListeningRef.current = false;
     setInterimText('');
+    accumulatedSpeechRef.current = '';
+    if (silenceTimeoutRef.current) {
+      clearTimeout(silenceTimeoutRef.current);
+      silenceTimeoutRef.current = null;
+    }
+    if (micAnimFrameRef.current) {
+      cancelAnimationFrame(micAnimFrameRef.current);
+      micAnimFrameRef.current = null;
+    }
     if (recognitionRef.current) {
       try {
-        recognitionRef.current.abort();
+        recognitionRef.current.stop();
       } catch (e) {
         // ignore
       }
