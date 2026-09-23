@@ -1,5 +1,5 @@
 from catalog import get_all_products, get_product_by_id, filter_products, validate_coupon, estimate_delivery
-from tools import get_session, execute_tool
+from tools import get_session, reset_session, execute_tool
 
 def test_catalog_load():
     products = get_all_products()
@@ -35,6 +35,14 @@ def test_cart_session_operations():
     summary2 = session.get_summary()
     assert summary2["discount_amount"] > 0
     assert summary2["total"] == summary2["subtotal"] - summary2["discount_amount"]
+
+def test_reset_session():
+    session = get_session("test-reset-user")
+    session.add_item("dw-01", 1)
+    assert session.get_summary()["total_items_count"] == 1
+    new_session = reset_session("test-reset-user")
+    assert new_session.get_summary()["total_items_count"] == 0
+    assert new_session.get_summary()["total"] == 0
 
 def test_execute_tool_spotlight():
     res = execute_tool("highlight_product", {"product_id": "dw-02"}, "test-user-2")

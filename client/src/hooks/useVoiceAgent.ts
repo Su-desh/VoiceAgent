@@ -75,6 +75,9 @@ export function useVoiceAgent({
   const stateRef = useRef<AgentState>(state);
   stateRef.current = state;
 
+  // Track whether user has initiated interaction (prevents auto-listening before user gesture)
+  const hasInteractedRef = useRef<boolean>(false);
+
   // Helper to append message
   const appendMessage = useCallback((sender: 'user' | 'agent' | 'system', text: string, toolCall?: string) => {
     setMessages((prev) => [
@@ -150,7 +153,7 @@ export function useVoiceAgent({
     utterance.onend = () => {
       isPlayingRef.current = false;
       setAudioLevel(0);
-      if (continuousModeRef.current) {
+      if (continuousModeRef.current && hasInteractedRef.current) {
         setTimeout(() => {
           startListeningRef.current();
         }, 350);
@@ -248,7 +251,7 @@ export function useVoiceAgent({
     if (!audioContextRef.current) {
       isPlayingRef.current = false;
       setAudioLevel(0);
-      if (continuousModeRef.current) {
+      if (continuousModeRef.current && hasInteractedRef.current) {
         setTimeout(() => startListeningRef.current(), 350);
       } else {
         setState('idle');
@@ -267,7 +270,7 @@ export function useVoiceAgent({
     completionTimerRef.current = setTimeout(() => {
       isPlayingRef.current = false;
       setAudioLevel(0);
-      if (continuousModeRef.current) {
+      if (continuousModeRef.current && hasInteractedRef.current) {
         startListeningRef.current();
       } else {
         setState('idle');
@@ -342,6 +345,13 @@ export function useVoiceAgent({
               stopPlayback();
             } else if (data.type === 'TURN_COMPLETE') {
               onGeminiTurnComplete();
+            } else if (data.type === 'SESSION_RESET') {
+              if (data.cart) {
+                callbacksRef.current.onUpdateCart(data.cart);
+              }
+              setInterimText('');
+              accumulatedSpeechRef.current = '';
+              setState('idle');
             } else if (data.type === 'SYSTEM_INFO') {
               console.log('Voice Concierge info:', data.message);
             }
@@ -381,6 +391,7 @@ export function useVoiceAgent({
     async (promptText: string) => {
       if (!promptText.trim()) return;
 
+      hasInteractedRef.current = true;
       stopPlayback();
       if (recognitionRef.current) {
         try {
@@ -478,6 +489,7 @@ export function useVoiceAgent({
   const startListening = useCallback(async () => {
     if (isPlayingRef.current) return;
 
+    hasInteractedRef.current = true;
     setState('listening');
     isListeningRef.current = true;
     setInterimText('');
@@ -651,7 +663,7 @@ export function useVoiceAgent({
         if (audioFinished && noRecentAudio && activeSourcesRef.current.length === 0) {
           isPlayingRef.current = false;
           setAudioLevel(0);
-          if (continuousModeRef.current) {
+          if (continuousModeRef.current && hasInteractedRef.current) {
             startListeningRef.current();
           } else {
             setState('idle');
@@ -680,6 +692,56 @@ export function useVoiceAgent({
     });
   }, [state, stopListening]);
 
+  // Clean Fresh Start: Resets conversation, cart, and restores idle dormant state
+  const resetAgent = useCallback(async () => {
+    hasInteractedRef.current = false;
+    stopPlayback();
+    stopListening();
+    setState('idle');
+    setAudioLevel(0);
+    setInterimText('');
+    accumulatedSpeechRef.current = '';
+
+    setMessages([
+      {
+        id: 'welcome',
+        sender: 'agent',
+        text: "Shubh Deepavali! Welcome to the Grand Festive Showcase. I'm Aarav, your personal gifting concierge. Who are you shopping for today?",
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      }
+    ]);
+
+    const emptyCart: CartSummary = {
+      items: [],
+      total_items_count: 0,
+      subtotal: 0,
+      discount_amount: 0,
+      coupon_code: null,
+      free_diya_gift: false,
+      total: 0,
+      pincode: null,
+      delivery_info: null
+    };
+    callbacksRef.current.onUpdateCart(emptyCart);
+
+    // Notify backend WebSocket to reset session
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'RESET_SESSION' }));
+    }
+
+    // Call REST endpoint as well to guarantee reset
+    try {
+      const host = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
+      await fetch(`http://${host}:8000/api/session/reset`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: 'default' })
+      });
+    } catch (e) {
+      // ignore
+    }
+  }, [stopPlayback, stopListening]);
+
   return {
     state,
     audioLevel,
@@ -694,6 +756,7 @@ export function useVoiceAgent({
     stopListening,
     toggleListening,
     sendUserPrompt,
-    stopPlayback
+    stopPlayback,
+    resetAgent
   };
 }

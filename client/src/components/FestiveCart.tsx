@@ -13,7 +13,8 @@ import {
   ArrowRight, 
   QrCode, 
   CreditCard,
-  Percent
+  Percent,
+  RotateCcw
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 
@@ -25,6 +26,7 @@ interface FestiveCartProps {
   onRemoveItem: (productId: string) => void;
   onApplyCoupon: (code: string) => void;
   onCheckPincode: (pincode: string) => void;
+  onReset?: () => void;
 }
 
 export const FestiveCart: React.FC<FestiveCartProps> = ({
@@ -35,6 +37,7 @@ export const FestiveCart: React.FC<FestiveCartProps> = ({
   onRemoveItem,
   onApplyCoupon,
   onCheckPincode,
+  onReset
 }) => {
   const [couponInput, setCouponInput] = useState('');
   const [pincodeInput, setPincodeInput] = useState(cart.pincode || '');
@@ -84,12 +87,24 @@ export const FestiveCart: React.FC<FestiveCartProps> = ({
               {cart.total_items_count} items
             </span>
           </div>
-          <button
-            onClick={onClose}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
-          >
-            <X className="w-5 h-5" />
-          </button>
+          <div className="flex items-center gap-1.5">
+            {onReset && cart.items.length > 0 && (
+              <button
+                onClick={onReset}
+                title="Clear cart and start fresh"
+                className="px-2.5 py-1 rounded-lg text-xs text-slate-400 hover:text-amber-300 hover:bg-slate-800 transition-colors flex items-center gap-1 border border-slate-800 hover:border-amber-500/30"
+              >
+                <RotateCcw className="w-3 h-3" />
+                <span>Clear</span>
+              </button>
+            )}
+            <button
+              onClick={onClose}
+              className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
         {/* Gift Progress Bar */}

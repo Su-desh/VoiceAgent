@@ -128,6 +128,10 @@ def get_session(session_id: str = "default") -> CartSession:
         sessions[session_id] = CartSession(session_id)
     return sessions[session_id]
 
+def reset_session(session_id: str = "default") -> CartSession:
+    sessions[session_id] = CartSession(session_id)
+    return sessions[session_id]
+
 # Tool definitions formatted for Gemini
 GEMINI_TOOLS_DECLARATIONS = [
     {

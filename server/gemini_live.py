@@ -18,7 +18,6 @@ class GeminiLiveBridge:
         self.gemini_ws: Optional[websockets.WebSocketClientProtocol] = None
         self.is_connected = False
         self._receive_task: Optional[asyncio.Task] = None
-        self._keepalive_task: Optional[asyncio.Task] = None
 
     async def connect(self) -> bool:
         if not GEMINI_API_KEY:
@@ -58,30 +57,19 @@ class GeminiLiveBridge:
             # Cancel old tasks if any
             if self._receive_task:
                 self._receive_task.cancel()
-            if self._keepalive_task:
-                self._keepalive_task.cancel()
 
-            # Start background listener task and keepalive task
+            # Start background listener task
             self._receive_task = asyncio.create_task(self._listen_to_gemini())
-            self._keepalive_task = asyncio.create_task(self._keepalive_loop())
             return True
         except Exception as e:
             logger.error(f"Error connecting to Gemini Live WebSocket: {e}")
             self.is_connected = False
             return False
 
-    async def _keepalive_loop(self):
-        """Sends a silent PCM frame every 12 seconds to prevent idle timeout."""
-        silent_pcm = base64.b64encode(b"\x00" * 320).decode("utf-8")
-        while self.is_connected and self.gemini_ws:
-            try:
-                await asyncio.sleep(12)
-                if self.is_connected and self.gemini_ws:
-                    await self.send_audio_chunk(silent_pcm)
-            except asyncio.CancelledError:
-                break
-            except Exception:
-                break
+    async def reset(self):
+        """Cleanly closes existing live connection and starts a fresh one."""
+        await self.close()
+        return await self.connect()
 
     async def send_audio_chunk(self, base64_pcm_16k: str):
         if not self.is_connected or not self.gemini_ws:
@@ -213,8 +201,6 @@ class GeminiLiveBridge:
 
     async def close(self):
         self.is_connected = False
-        if self._keepalive_task:
-            self._keepalive_task.cancel()
         if self._receive_task:
             self._receive_task.cancel()
         if self.gemini_ws:

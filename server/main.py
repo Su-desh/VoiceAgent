@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 from config import HOST, PORT, GEMINI_API_KEY
 from catalog import PRODUCTS, COUPONS, get_all_products, get_product_by_id
-from tools import get_session, execute_tool
+from tools import get_session, reset_session, execute_tool
 from gemini_live import GeminiLiveBridge
 from chat_service import chat_service
 
@@ -33,6 +33,9 @@ class ChatRequest(BaseModel):
 class ActionRequest(BaseModel):
     tool: str
     args: Dict[str, Any]
+    session_id: Optional[str] = "default"
+
+class ResetRequest(BaseModel):
     session_id: Optional[str] = "default"
 
 @app.get("/")
@@ -87,6 +90,17 @@ def action_endpoint(req: ActionRequest):
     res = execute_tool(req.tool, req.args, req.session_id)
     return res
 
+@app.post("/api/session/reset")
+def reset_session_endpoint(req: Optional[ResetRequest] = None):
+    sid = req.session_id if req and req.session_id else "default"
+    session = reset_session(sid)
+    logger.info(f"Reset session '{sid}' to fresh empty state.")
+    return {
+        "success": True,
+        "message": "Session reset successfully",
+        "cart": session.get_summary()
+    }
+
 @app.websocket("/ws/live/{session_id}")
 async def websocket_live_endpoint(websocket: WebSocket, session_id: str):
     await websocket.accept()
@@ -130,6 +144,7 @@ async def websocket_live_endpoint(websocket: WebSocket, session_id: str):
             elif msg_type == "USER_TEXT":
                 user_text = data.get("text", "")
                 history = data.get("history", [])
+                logger.info(f"Received USER_TEXT in session '{session_id}': {user_text}")
                 sent_to_live = False
 
                 if bridge.is_connected:
@@ -160,6 +175,16 @@ async def websocket_live_endpoint(websocket: WebSocket, session_id: str):
                     "type": "TOOL_RESULT",
                     "result": res
                 })
+
+            # 4. Fresh Start / Reset session command
+            elif msg_type == "RESET_SESSION":
+                session = reset_session(session_id)
+                await bridge.reset()
+                await websocket.send_json({
+                    "type": "SESSION_RESET",
+                    "cart": session.get_summary()
+                })
+                logger.info(f"Session '{session_id}' freshly reset via WebSocket.")
 
     except WebSocketDisconnect:
         logger.info(f"Client disconnected from /ws/live/{session_id}")

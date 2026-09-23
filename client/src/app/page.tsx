@@ -18,7 +18,8 @@ import {
   ShieldCheck, 
   Truck, 
   Award,
-  Zap
+  Zap,
+  RotateCcw
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 
@@ -175,13 +176,23 @@ export default function Home() {
     continuousMode,
     toggleContinuousMode,
     toggleListening,
-    sendUserPrompt
+    sendUserPrompt,
+    resetAgent
   } = useVoiceAgent({
     onSpotlightProduct: handleSpotlightProduct,
     onUpdateCart: handleUpdateCart,
     onOpenCheckout: handleOpenCheckout,
     onCouponApplied: handleCouponApplied
   });
+
+  const [resetToast, setResetToast] = useState<string | null>(null);
+
+  const handleFreshStart = useCallback(() => {
+    resetAgent();
+    setSpotlightId(null);
+    setResetToast('Fresh session started! Aarav is ready.');
+    setTimeout(() => setResetToast(null), 3500);
+  }, [resetAgent]);
 
   // Load products from server if available
   useEffect(() => {
@@ -286,7 +297,17 @@ export default function Home() {
         </div>
 
         {/* Header Right Actions */}
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2.5">
+          {/* Fresh Start Button */}
+          <button
+            onClick={handleFreshStart}
+            title="Start Fresh (Reset conversation & cart)"
+            className="px-3 py-1.5 rounded-xl bg-slate-900/90 border border-slate-750 hover:border-amber-400/60 text-slate-300 hover:text-amber-300 transition-all flex items-center gap-1.5 text-xs font-semibold shadow-sm active:scale-95 group"
+          >
+            <RotateCcw className="w-3.5 h-3.5 text-amber-400 group-hover:-rotate-45 transition-transform duration-200" />
+            <span className="hidden sm:inline">Start Fresh</span>
+          </button>
+
           {/* Status Pill */}
           <div className="hidden md:flex items-center gap-2 px-3 py-1 rounded-full bg-slate-900 border border-slate-800 text-xs">
             <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
@@ -308,6 +329,14 @@ export default function Home() {
           </button>
         </div>
       </header>
+
+      {/* Fresh Start Feedback Notification Toast */}
+      {resetToast && (
+        <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-full bg-emerald-950/90 border border-emerald-500/60 text-emerald-200 text-xs font-semibold shadow-2xl flex items-center gap-2 animate-in fade-in slide-in-from-top-4 backdrop-blur-md">
+          <RotateCcw className="w-3.5 h-3.5 text-emerald-400" />
+          <span>{resetToast}</span>
+        </div>
+      )}
 
       {/* Hero & Interactive Voice Visualizer Section */}
       <section className="px-4 sm:px-8 pt-8 pb-10 max-w-6xl mx-auto w-full flex flex-col items-center text-center">
@@ -383,6 +412,16 @@ export default function Home() {
           >
             <span className={`w-2 h-2 rounded-full ${continuousMode ? 'bg-amber-400 animate-pulse' : 'bg-slate-600'}`} />
             <span>Hands-Free Auto-Listen: {continuousMode ? 'ON' : 'OFF'}</span>
+          </button>
+
+          {/* Fresh Start Button */}
+          <button
+            onClick={handleFreshStart}
+            className="px-4 py-2.5 rounded-2xl text-xs font-semibold border border-slate-800 bg-slate-900/60 text-slate-400 hover:text-amber-300 hover:border-amber-500/40 transition-all flex items-center gap-1.5 active:scale-95 group shadow-sm"
+            title="Clear cart and conversation to start completely fresh"
+          >
+            <RotateCcw className="w-3.5 h-3.5 text-amber-400 group-hover:-rotate-45 transition-transform duration-200" />
+            <span>Fresh Start</span>
           </button>
         </div>
 
@@ -507,6 +546,7 @@ export default function Home() {
         onRemoveItem={handleRemoveItem}
         onApplyCoupon={handleApplyCoupon}
         onCheckPincode={handleCheckPincode}
+        onReset={handleFreshStart}
       />
     </main>
   );
