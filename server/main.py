@@ -129,11 +129,21 @@ async def websocket_live_endpoint(websocket: WebSocket, session_id: str):
             # 2. Text message from user
             elif msg_type == "USER_TEXT":
                 user_text = data.get("text", "")
-                if connected_to_gemini:
-                    await bridge.send_user_text(user_text)
-                else:
-                    # Process via ChatService and send back
-                    chat_res = await chat_service.handle_message(user_text, session_id=session_id)
+                history = data.get("history", [])
+                sent_to_live = False
+
+                if bridge.is_connected:
+                    sent_to_live = await bridge.send_user_text(user_text)
+
+                if not sent_to_live:
+                    # Try to reconnect live bridge once
+                    if await bridge.connect():
+                        sent_to_live = await bridge.send_user_text(user_text)
+
+                # If still not sent to live, seamlessly execute with high-speed chat_service
+                if not sent_to_live:
+                    logger.info("Using chat_service fallback for user query")
+                    chat_res = await chat_service.handle_message(user_text, session_id=session_id, history=history)
                     await websocket.send_json({
                         "type": "AGENT_RESPONSE",
                         "text": chat_res["reply"],

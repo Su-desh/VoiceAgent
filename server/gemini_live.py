@@ -11,8 +11,6 @@ from tools import GEMINI_TOOLS_DECLARATIONS, execute_tool
 logger = logging.getLogger("gemini_live")
 logger.setLevel(logging.INFO)
 
-GEMINI_WS_URL = f"wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key={GEMINI_API_KEY}"
-
 class GeminiLiveBridge:
     def __init__(self, session_id: str, on_client_message: Callable[[dict], None]):
         self.session_id = session_id
@@ -20,6 +18,7 @@ class GeminiLiveBridge:
         self.gemini_ws: Optional[websockets.WebSocketClientProtocol] = None
         self.is_connected = False
         self._receive_task: Optional[asyncio.Task] = None
+        self._keepalive_task: Optional[asyncio.Task] = None
 
     async def connect(self) -> bool:
         if not GEMINI_API_KEY:
@@ -28,10 +27,10 @@ class GeminiLiveBridge:
 
         try:
             url = f"wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key={GEMINI_API_KEY}"
-            self.gemini_ws = await websockets.connect(url)
+            self.gemini_ws = await websockets.connect(url, ping_interval=20, ping_timeout=10)
             self.is_connected = True
 
-            # Send initial setup packet
+            # Send initial setup packet with Puck male voice
             setup_message = {
                 "setup": {
                     "model": f"models/{GEMINI_LIVE_MODEL}",
@@ -56,46 +55,78 @@ class GeminiLiveBridge:
             await self.gemini_ws.send(json.dumps(setup_message))
             logger.info("Sent Gemini Live setup handshake.")
 
-            # Start background listener task
+            # Cancel old tasks if any
+            if self._receive_task:
+                self._receive_task.cancel()
+            if self._keepalive_task:
+                self._keepalive_task.cancel()
+
+            # Start background listener task and keepalive task
             self._receive_task = asyncio.create_task(self._listen_to_gemini())
+            self._keepalive_task = asyncio.create_task(self._keepalive_loop())
             return True
         except Exception as e:
             logger.error(f"Error connecting to Gemini Live WebSocket: {e}")
             self.is_connected = False
             return False
 
+    async def _keepalive_loop(self):
+        """Sends a silent PCM frame every 12 seconds to prevent idle timeout."""
+        silent_pcm = base64.b64encode(b"\x00" * 320).decode("utf-8")
+        while self.is_connected and self.gemini_ws:
+            try:
+                await asyncio.sleep(12)
+                if self.is_connected and self.gemini_ws:
+                    await self.send_audio_chunk(silent_pcm)
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                break
+
     async def send_audio_chunk(self, base64_pcm_16k: str):
         if not self.is_connected or not self.gemini_ws:
             return
         
-        msg = {
-            "realtimeInput": {
-                "mediaChunks": [
-                    {
-                        "mimeType": "audio/pcm;rate=16000",
-                        "data": base64_pcm_16k
-                    }
-                ]
+        try:
+            msg = {
+                "realtimeInput": {
+                    "mediaChunks": [
+                        {
+                            "mimeType": "audio/pcm;rate=16000",
+                            "data": base64_pcm_16k
+                        }
+                    ]
+                }
             }
-        }
-        await self.gemini_ws.send(json.dumps(msg))
+            await self.gemini_ws.send(json.dumps(msg))
+        except Exception as e:
+            logger.warning(f"Error sending audio chunk to Gemini Live: {e}")
+            self.is_connected = False
 
-    async def send_user_text(self, text: str):
+    async def send_user_text(self, text: str) -> bool:
         if not self.is_connected or not self.gemini_ws:
-            return
+            connected = await self.connect()
+            if not connected or not self.gemini_ws:
+                return False
         
-        msg = {
-            "clientContent": {
-                "turns": [
-                    {
-                        "role": "user",
-                        "parts": [{"text": text}]
-                    }
-                ],
-                "turnComplete": True
+        try:
+            msg = {
+                "clientContent": {
+                    "turns": [
+                        {
+                            "role": "user",
+                            "parts": [{"text": text}]
+                        }
+                    ],
+                    "turnComplete": True
+                }
             }
-        }
-        await self.gemini_ws.send(json.dumps(msg))
+            await self.gemini_ws.send(json.dumps(msg))
+            return True
+        except Exception as e:
+            logger.error(f"Error sending user text to Gemini Live: {e}")
+            self.is_connected = False
+            return False
 
     async def _listen_to_gemini(self):
         try:
@@ -174,10 +205,20 @@ class GeminiLiveBridge:
             logger.error(f"Error in Gemini Live receiver: {e}")
         finally:
             self.is_connected = False
+            # Ensure client never hangs if connection dropped mid-turn
+            try:
+                await self.on_client_message({"type": "TURN_COMPLETE"})
+            except Exception:
+                pass
 
     async def close(self):
         self.is_connected = False
+        if self._keepalive_task:
+            self._keepalive_task.cancel()
         if self._receive_task:
             self._receive_task.cancel()
         if self.gemini_ws:
-            await self.gemini_ws.close()
+            try:
+                await self.gemini_ws.close()
+            except Exception:
+                pass

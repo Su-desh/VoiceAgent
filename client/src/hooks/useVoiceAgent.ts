@@ -57,6 +57,8 @@ export function useVoiceAgent({
   const recognitionRef = useRef<any>(null);
   const isListeningRef = useRef<boolean>(false);
   const completionTimerRef = useRef<any>(null);
+  const lastAudioPacketTimeRef = useRef<number>(0);
+  const thinkingStartTimeRef = useRef<number>(0);
 
   const messagesRef = useRef<Message[]>(messages);
   messagesRef.current = messages;
@@ -223,6 +225,7 @@ export function useVoiceAgent({
       nextScheduledTimeRef.current = startTime + audioBuffer.duration;
 
       isPlayingRef.current = true;
+      lastAudioPacketTimeRef.current = Date.now();
       setState('speaking');
       activeSourcesRef.current.push(source);
 
@@ -378,6 +381,7 @@ export function useVoiceAgent({
 
       stopPlayback();
       appendMessage('user', promptText);
+      thinkingStartTimeRef.current = Date.now();
       setState('thinking');
       setInterimText('');
 
@@ -546,13 +550,51 @@ export function useVoiceAgent({
   }, []);
 
   const toggleListening = useCallback(() => {
-    if (state === 'listening') {
+    if (state === 'speaking') {
+      stopPlayback();
+      if (continuousModeRef.current) {
+        startListening();
+      } else {
+        setState('idle');
+      }
+    } else if (state === 'listening') {
       stopListening();
     } else {
       stopPlayback();
       startListening();
     }
   }, [state, startListening, stopListening, stopPlayback]);
+
+  // Active unfreeze watchdog to guarantee UI never gets stuck
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const now = Date.now();
+      const ctx = audioContextRef.current;
+
+      // If in speaking state but all scheduled audio has finished and no new audio for > 2.5s
+      if (stateRef.current === 'speaking') {
+        const audioFinished = ctx ? ctx.currentTime >= nextScheduledTimeRef.current : true;
+        const noRecentAudio = now - lastAudioPacketTimeRef.current > 2500;
+        if (audioFinished && noRecentAudio && activeSourcesRef.current.length === 0) {
+          isPlayingRef.current = false;
+          setAudioLevel(0);
+          if (continuousModeRef.current) {
+            startListeningRef.current();
+          } else {
+            setState('idle');
+          }
+        }
+      }
+
+      // If in thinking state for > 7s without server response, recover gracefully
+      if (stateRef.current === 'thinking' && now - thinkingStartTimeRef.current > 7000) {
+        setState('idle');
+        setInterimText('');
+      }
+    }, 400);
+
+    return () => clearInterval(timer);
+  }, []);
 
   const toggleContinuousMode = useCallback(() => {
     setContinuousMode((prev) => {
