@@ -10,8 +10,8 @@ GEMINI_LIVE_MODEL = os.getenv("GEMINI_LIVE_MODEL", "gemini-2.5-flash-native-audi
 # Best conversational fast chat model
 GEMINI_CHAT_MODEL = os.getenv("GEMINI_CHAT_MODEL", "gemini-3.6-flash")
 
-# Voice options for Gemini Multimodal Live: Aoede, Charon, Fenrir, Kore, Puck
-VOICE_NAME = os.getenv("VOICE_NAME", "Aoede")
+# Voice options for Gemini Multimodal Live (Puck is male, Aoede is female)
+VOICE_NAME = os.getenv("VOICE_NAME", "Puck")
 
 PORT = int(os.getenv("PORT", "8000"))
 HOST = os.getenv("HOST", "0.0.0.0")

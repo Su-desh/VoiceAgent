@@ -171,6 +171,8 @@ export default function Home() {
     state,
     audioLevel,
     messages,
+    continuousMode,
+    toggleContinuousMode,
     toggleListening,
     sendUserPrompt
   } = useVoiceAgent({
@@ -331,20 +333,27 @@ export default function Home() {
           />
         </div>
 
-        {/* Voice Trigger Buttons */}
-        <div className="flex flex-wrap items-center justify-center gap-3">
+        {/* Voice Trigger Buttons & Continuous Dialogue Toggle */}
+        <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
           <button
             onClick={toggleListening}
             className={`px-6 py-3 rounded-2xl font-bold text-sm flex items-center gap-2.5 transition-all shadow-xl active:scale-95 ${
               state === 'listening'
                 ? 'bg-red-600 text-white shadow-red-900/40 animate-pulse'
+                : state === 'speaking'
+                ? 'bg-emerald-600 text-white shadow-emerald-900/40'
                 : 'bg-gradient-to-r from-amber-500 via-yellow-400 to-amber-500 text-slate-950 shadow-amber-500/30 hover:shadow-amber-500/50 hover:brightness-105'
             }`}
           >
             {state === 'listening' ? (
               <>
                 <MicOff className="w-4 h-4" />
-                <span>Listening... Click to Stop</span>
+                <span>Listening... (Tap to Pause)</span>
+              </>
+            ) : state === 'speaking' ? (
+              <>
+                <Flame className="w-4 h-4 text-white fill-white animate-bounce" />
+                <span>Aarav Speaking... (Tap to Interrupt)</span>
               </>
             ) : (
               <>
@@ -352,6 +361,19 @@ export default function Home() {
                 <span>Tap to Speak to Aarav</span>
               </>
             )}
+          </button>
+
+          {/* Hands-Free Mode Toggle */}
+          <button
+            onClick={toggleContinuousMode}
+            className={`px-4 py-2.5 rounded-2xl text-xs font-semibold border transition-all flex items-center gap-2 ${
+              continuousMode
+                ? 'bg-amber-500/15 border-amber-400/50 text-amber-300 shadow-sm'
+                : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <span className={`w-2 h-2 rounded-full ${continuousMode ? 'bg-amber-400 animate-pulse' : 'bg-slate-600'}`} />
+            <span>Hands-Free Auto-Listen: {continuousMode ? 'ON' : 'OFF'}</span>
           </button>
         </div>
 

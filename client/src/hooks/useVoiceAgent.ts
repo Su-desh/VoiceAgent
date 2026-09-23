@@ -28,7 +28,7 @@ export function useVoiceAgent({
   ]);
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [isConnected, setIsConnected] = useState<boolean>(false);
-  const [liveMode, setLiveMode] = useState<boolean>(true);
+  const [continuousMode, setContinuousMode] = useState<boolean>(true);
 
   // Store latest callbacks in ref to avoid reconnecting WebSocket
   const callbacksRef = useRef({
@@ -54,6 +54,12 @@ export function useVoiceAgent({
   const isPlayingRef = useRef<boolean>(false);
   const currentSourceRef = useRef<AudioBufferSourceNode | null>(null);
   const recognitionRef = useRef<any>(null);
+  const isListeningRef = useRef<boolean>(false);
+  const messagesRef = useRef<Message[]>(messages);
+  messagesRef.current = messages;
+
+  const continuousModeRef = useRef<boolean>(continuousMode);
+  continuousModeRef.current = continuousMode;
 
   // Helper to append message
   const appendMessage = useCallback((sender: 'user' | 'agent' | 'system', text: string, toolCall?: string) => {
@@ -69,21 +75,55 @@ export function useVoiceAgent({
     ]);
   }, []);
 
-  // Speech synthesis fallback helper
+  // Forward declarations for circular dependencies
+  const startListeningRef = useRef<() => void>(() => {});
+
+  // Speech synthesis fallback helper with authentic MALE voice
   const speakText = useCallback((text: string) => {
     if (typeof window === 'undefined' || !window.speechSynthesis) return;
     window.speechSynthesis.cancel();
 
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.rate = 1.0;
-    utterance.pitch = 1.05;
+    utterance.pitch = 0.92; // Slightly deeper, natural male pitch
     utterance.lang = 'en-IN';
 
+    // Prioritize MALE English / Indian voices for Aarav
     const voices = window.speechSynthesis.getVoices();
+    const isMale = (v: SpeechSynthesisVoice) => {
+      const name = v.name.toLowerCase();
+      return (
+        name.includes('male') ||
+        name.includes('david') ||
+        name.includes('george') ||
+        name.includes('rishi') ||
+        name.includes('prabhat') ||
+        name.includes('james') ||
+        name.includes('guy') ||
+        name.includes('alex') ||
+        name.includes('daniel')
+      ) && !name.includes('female');
+    };
+    const isFemale = (v: SpeechSynthesisVoice) => {
+      const name = v.name.toLowerCase();
+      return (
+        name.includes('female') ||
+        name.includes('zira') ||
+        name.includes('veena') ||
+        name.includes('heera') ||
+        name.includes('samantha') ||
+        name.includes('karen') ||
+        name.includes('victoria')
+      );
+    };
+
     const preferredVoice =
-      voices.find((v) => v.lang.includes('en-IN')) ||
-      voices.find((v) => v.lang.includes('en-GB')) ||
-      voices.find((v) => v.lang.includes('en-US'));
+      voices.find((v) => v.lang.includes('en') && isMale(v)) ||
+      voices.find((v) => v.lang.includes('en-IN') && !isFemale(v)) ||
+      voices.find((v) => v.lang.includes('en-GB') && !isFemale(v)) ||
+      voices.find((v) => v.lang.includes('en') && !isFemale(v)) ||
+      voices[0];
+
     if (preferredVoice) {
       utterance.voice = preferredVoice;
     }
@@ -94,13 +134,20 @@ export function useVoiceAgent({
     };
 
     utterance.onend = () => {
-      setState('idle');
       setAudioLevel(0);
+      if (continuousModeRef.current) {
+        // Automatically resume listening for user response after Aarav finishes speaking
+        setTimeout(() => {
+          startListeningRef.current();
+        }, 400);
+      } else {
+        setState('idle');
+      }
     };
 
     utterance.onerror = () => {
-      setState('idle');
       setAudioLevel(0);
+      setState('idle');
     };
 
     window.speechSynthesis.speak(utterance);
@@ -128,8 +175,14 @@ export function useVoiceAgent({
   const playNextAudioChunk = useCallback(() => {
     if (audioQueueRef.current.length === 0 || !audioContextRef.current) {
       isPlayingRef.current = false;
-      setState((prev) => (prev === 'speaking' ? 'idle' : prev));
       setAudioLevel(0);
+      if (continuousModeRef.current) {
+        setTimeout(() => {
+          startListeningRef.current();
+        }, 400);
+      } else {
+        setState((prev) => (prev === 'speaking' ? 'idle' : prev));
+      }
       return;
     }
 
@@ -142,7 +195,6 @@ export function useVoiceAgent({
     source.buffer = buffer;
     currentSourceRef.current = source;
 
-    // Connect to volume level analyzer
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 64;
     source.connect(analyser);
@@ -213,7 +265,7 @@ export function useVoiceAgent({
       try {
         currentSourceRef.current.stop();
       } catch (e) {
-        // ignore if already stopped
+        // ignore
       }
       currentSourceRef.current = null;
     }
@@ -301,7 +353,7 @@ export function useVoiceAgent({
     };
   }, [enqueueAudioChunk, handleUiEvent, appendMessage, speakText, stopPlayback]);
 
-  // Send a prompt to Aarav (via WebSocket or HTTP /api/chat fallback)
+  // Send a prompt to Aarav (multi-turn conversation)
   const sendUserPrompt = useCallback(
     async (promptText: string) => {
       if (!promptText.trim()) return;
@@ -310,11 +362,21 @@ export function useVoiceAgent({
       appendMessage('user', promptText);
       setState('thinking');
 
+      // Build context history from previous turns
+      const history = messagesRef.current
+        .filter((m) => m.sender === 'user' || m.sender === 'agent')
+        .slice(-8)
+        .map((m) => ({
+          role: m.sender === 'user' ? 'user' : 'model',
+          content: m.text
+        }));
+
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
         wsRef.current.send(
           JSON.stringify({
             type: 'USER_TEXT',
-            text: promptText
+            text: promptText,
+            history
           })
         );
       } else {
@@ -326,7 +388,8 @@ export function useVoiceAgent({
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               message: promptText,
-              session_id: 'default'
+              session_id: 'default',
+              history
             })
           });
           const data = await res.json();
@@ -348,14 +411,23 @@ export function useVoiceAgent({
   );
 
   // Start Microphone capture
-  const startListening = useCallback(async () => {
+  const startListening = useCallback(() => {
     stopPlayback();
     setState('listening');
+    isListeningRef.current = true;
 
     if (typeof window !== 'undefined') {
       const SpeechRecognition =
         (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
       if (SpeechRecognition) {
+        if (recognitionRef.current) {
+          try {
+            recognitionRef.current.abort();
+          } catch (e) {
+            // ignore
+          }
+        }
+
         const recognition = new SpeechRecognition();
         recognitionRef.current = recognition;
         recognition.continuous = false;
@@ -370,35 +442,43 @@ export function useVoiceAgent({
         recognition.onresult = (event: any) => {
           const transcript = event.results[0][0].transcript;
           if (transcript) {
+            isListeningRef.current = false;
             sendUserPrompt(transcript);
           }
         };
 
-        recognition.onerror = () => {
-          setState('idle');
+        recognition.onerror = (e: any) => {
+          console.warn('Speech recognition status:', e.error);
+          isListeningRef.current = false;
           setAudioLevel(0);
+          if (e.error !== 'no-speech') {
+            setState('idle');
+          }
         };
 
         recognition.onend = () => {
-          if (state === 'listening') {
-            setState('idle');
-            setAudioLevel(0);
-          }
+          isListeningRef.current = false;
+          setAudioLevel(0);
+          setState((prev) => (prev === 'listening' ? 'idle' : prev));
         };
 
         try {
           recognition.start();
         } catch (e) {
           console.warn('Could not start recognition:', e);
+          setState('idle');
         }
       }
     }
-  }, [stopPlayback, sendUserPrompt, state]);
+  }, [stopPlayback, sendUserPrompt]);
+
+  startListeningRef.current = startListening;
 
   const stopListening = useCallback(() => {
+    isListeningRef.current = false;
     if (recognitionRef.current) {
       try {
-        recognitionRef.current.stop();
+        recognitionRef.current.abort();
       } catch (e) {
         // ignore
       }
@@ -415,6 +495,10 @@ export function useVoiceAgent({
     }
   }, [state, startListening, stopListening]);
 
+  const toggleContinuousMode = useCallback(() => {
+    setContinuousMode((prev) => !prev);
+  }, []);
+
   return {
     state,
     audioLevel,
@@ -422,8 +506,8 @@ export function useVoiceAgent({
     isConnected,
     isMuted,
     setIsMuted,
-    liveMode,
-    setLiveMode,
+    continuousMode,
+    toggleContinuousMode,
     startListening,
     stopListening,
     toggleListening,
