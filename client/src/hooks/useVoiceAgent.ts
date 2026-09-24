@@ -65,17 +65,19 @@ export function useVoiceAgent({
   const isAgentSpeakingRef = useRef<boolean>(false);
   const activeSourcesRef = useRef<AudioBufferSourceNode[]>([]);
   const completionTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const restartTimerRef = useRef<NodeJS.Timeout | null>(null);
   const lastAudioPacketTimeRef = useRef<number>(0);
   const thinkingStartTimeRef = useRef<number>(0);
 
   // Speech Recognition state
   const recognitionRef = useRef<any>(null);
+  const isRecognitionRunningRef = useRef<boolean>(false);
   const shouldListenRef = useRef<boolean>(false);
   const silenceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const accumulatedSpeechRef = useRef<string>('');
   const currentTurnMessageIdRef = useRef<string | null>(null);
 
-  // Keep references in sync synchronously
+  // Synchronous references
   const stateRef = useRef<AgentState>(state);
   const continuousModeRef = useRef<boolean>(continuousMode);
   continuousModeRef.current = continuousMode;
@@ -178,11 +180,18 @@ export function useVoiceAgent({
 
     // Prevent mic from recording agent's spoken voice
     shouldListenRef.current = false;
+    isRecognitionRunningRef.current = false;
     if (recognitionRef.current) {
+      const old = recognitionRef.current;
+      recognitionRef.current = null;
+      old.onstart = null;
+      old.onresult = null;
+      old.onerror = null;
+      old.onend = null;
       try {
-        recognitionRef.current.abort();
+        old.stop();
       } catch (e) {
-        // ignore
+        try { old.abort(); } catch (e2) {}
       }
     }
 
@@ -249,7 +258,7 @@ export function useVoiceAgent({
           if (!isAgentSpeakingRef.current) {
             startListeningRef.current();
           }
-        }, 400);
+        }, 350);
       } else {
         updateState('idle');
       }
@@ -320,11 +329,18 @@ export function useVoiceAgent({
       // Strictly stop microphone while agent is speaking to eliminate echo feedback
       if (shouldListenRef.current) {
         shouldListenRef.current = false;
+        isRecognitionRunningRef.current = false;
         if (recognitionRef.current) {
+          const old = recognitionRef.current;
+          recognitionRef.current = null;
+          old.onstart = null;
+          old.onresult = null;
+          old.onerror = null;
+          old.onend = null;
           try {
-            recognitionRef.current.abort();
+            old.stop();
           } catch (e) {
-            // ignore
+            try { old.abort(); } catch (e2) {}
           }
         }
       }
@@ -352,7 +368,7 @@ export function useVoiceAgent({
       isAgentSpeakingRef.current = false;
       setAudioLevel(0);
       if (continuousModeRef.current && hasInteractedRef.current) {
-        setTimeout(() => startListeningRef.current(), 400);
+        setTimeout(() => startListeningRef.current(), 350);
       } else {
         updateState('idle');
       }
@@ -361,13 +377,14 @@ export function useVoiceAgent({
 
     const ctx = audioContextRef.current;
     const remainingTime = Math.max(0, nextScheduledTimeRef.current - ctx.currentTime);
-    const delayMs = Math.round(remainingTime * 1000) + 400; // 400ms acoustic grace period to dissipate room echo
+    const delayMs = Math.round(remainingTime * 1000) + 350; // 350ms acoustic grace period to dissipate room echo
 
     if (completionTimerRef.current) {
       clearTimeout(completionTimerRef.current);
     }
 
     completionTimerRef.current = setTimeout(() => {
+      completionTimerRef.current = null;
       isPlayingRef.current = false;
       isAgentSpeakingRef.current = false;
       setAudioLevel(0);
@@ -391,11 +408,22 @@ export function useVoiceAgent({
 
       // Immediately silence speech recognition so it doesn't transcribe user's own tail
       shouldListenRef.current = false;
+      isRecognitionRunningRef.current = false;
+      if (silenceTimeoutRef.current) {
+        clearTimeout(silenceTimeoutRef.current);
+        silenceTimeoutRef.current = null;
+      }
       if (recognitionRef.current) {
+        const old = recognitionRef.current;
+        recognitionRef.current = null;
+        old.onstart = null;
+        old.onresult = null;
+        old.onerror = null;
+        old.onend = null;
         try {
-          recognitionRef.current.abort();
+          old.stop();
         } catch (e) {
-          // ignore
+          try { old.abort(); } catch (e2) {}
         }
       }
 
@@ -621,11 +649,36 @@ export function useVoiceAgent({
     // If agent is currently speaking, do NOT open microphone
     if (isAgentSpeakingRef.current || isPlayingRef.current) return;
 
+    // If already actively listening with an ongoing session, don't re-create
+    if (shouldListenRef.current && isRecognitionRunningRef.current && stateRef.current === 'listening') {
+      return;
+    }
+
     hasInteractedRef.current = true;
     shouldListenRef.current = true;
     updateState('listening');
     setInterimText('');
     accumulatedSpeechRef.current = '';
+
+    // Clean up any stale recognition reference safely
+    if (recognitionRef.current) {
+      const rec = recognitionRef.current;
+      recognitionRef.current = null;
+      isRecognitionRunningRef.current = false;
+      rec.onstart = null;
+      rec.onresult = null;
+      rec.onerror = null;
+      rec.onend = null;
+      try {
+        rec.stop();
+      } catch (e) {
+        try { rec.abort(); } catch (e2) {}
+      }
+    }
+
+    // Micro-delay to allow browser audio hardware to cleanly switch from speaker output to mic capture
+    await new Promise((r) => setTimeout(r, 60));
+    if (!shouldListenRef.current || isAgentSpeakingRef.current || isPlayingRef.current) return;
 
     // Initialize real microphone stream for audio level visualizer
     if (typeof window !== 'undefined' && navigator.mediaDevices && !micStreamRef.current) {
@@ -641,6 +694,13 @@ export function useVoiceAgent({
         analyser.fftSize = 64;
         analyser.smoothingTimeConstant = 0.8;
         source.connect(analyser);
+
+        // Required for Web Audio pull architecture without outputting to speakers:
+        const silenceGain = ctx.createGain();
+        silenceGain.gain.setValueAtTime(0, ctx.currentTime);
+        analyser.connect(silenceGain);
+        silenceGain.connect(ctx.destination);
+
         micAnalyserRef.current = analyser;
       } catch (e) {
         console.warn('Could not open mic volume analyzer:', e);
@@ -652,21 +712,16 @@ export function useVoiceAgent({
       const SpeechRecognition =
         (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
       if (SpeechRecognition) {
-        if (recognitionRef.current) {
-          try {
-            recognitionRef.current.abort();
-          } catch (e) {
-            // ignore
-          }
-        }
-
         const recognition = new SpeechRecognition();
         recognitionRef.current = recognition;
         recognition.continuous = true;
         recognition.interimResults = true;
-        recognition.lang = 'en-IN';
+        
+        const browserLang = (typeof navigator !== 'undefined' && navigator.language) || 'en-IN';
+        recognition.lang = browserLang.startsWith('en') ? browserLang : 'en-IN';
 
         recognition.onstart = () => {
+          isRecognitionRunningRef.current = true;
           if (shouldListenRef.current && !isAgentSpeakingRef.current) {
             updateState('listening');
           }
@@ -697,7 +752,7 @@ export function useVoiceAgent({
             setInterimText(currentText);
           }
 
-          // Natural silence debouncer (1300ms after final speech)
+          // Natural silence debouncer (950ms after speech)
           if (silenceTimeoutRef.current) {
             clearTimeout(silenceTimeoutRef.current);
           }
@@ -708,36 +763,61 @@ export function useVoiceAgent({
               shouldListenRef.current = false;
               sendUserPrompt(textToSend);
             }
-          }, 1300);
+          }, 950);
         };
 
         recognition.onerror = (e: any) => {
-          if (e.error === 'no-speech' || e.error === 'aborted') {
+          if (e.error === 'no-speech') {
+            return;
+          }
+          if (e.error === 'aborted') {
+            isRecognitionRunningRef.current = false;
+            return;
+          }
+          if (e.error === 'not-allowed') {
+            shouldListenRef.current = false;
+            isRecognitionRunningRef.current = false;
+            updateState('idle');
             return;
           }
           console.warn('Speech recognition warning:', e.error);
         };
 
         recognition.onend = () => {
-          // STRICT RULE: Only restart if we should be listening AND agent is not speaking
+          isRecognitionRunningRef.current = false;
+          recognitionRef.current = null;
+
+          // If still supposed to be listening and agent is not speaking:
           if (
             continuousModeRef.current &&
             shouldListenRef.current &&
             !isAgentSpeakingRef.current &&
-            stateRef.current === 'listening'
+            !isPlayingRef.current
           ) {
-            try {
-              recognition.start();
-            } catch (err) {
-              // ignore already running
-            }
+            // Clean fresh instance restart
+            if (restartTimerRef.current) clearTimeout(restartTimerRef.current);
+            restartTimerRef.current = setTimeout(() => {
+              if (shouldListenRef.current && !isAgentSpeakingRef.current && !isPlayingRef.current) {
+                startListeningRef.current();
+              }
+            }, 80);
           }
         };
 
         try {
           recognition.start();
-        } catch (e) {
+        } catch (e: any) {
           console.warn('SpeechRecognition start notice:', e);
+          isRecognitionRunningRef.current = false;
+          recognitionRef.current = null;
+          if (continuousModeRef.current && shouldListenRef.current && !isAgentSpeakingRef.current) {
+            if (restartTimerRef.current) clearTimeout(restartTimerRef.current);
+            restartTimerRef.current = setTimeout(() => {
+              if (shouldListenRef.current && !isAgentSpeakingRef.current) {
+                startListeningRef.current();
+              }
+            }, 150);
+          }
         }
       }
     }
@@ -747,17 +827,28 @@ export function useVoiceAgent({
 
   const stopListening = useCallback(() => {
     shouldListenRef.current = false;
+    isRecognitionRunningRef.current = false;
     setInterimText('');
     accumulatedSpeechRef.current = '';
     if (silenceTimeoutRef.current) {
       clearTimeout(silenceTimeoutRef.current);
       silenceTimeoutRef.current = null;
     }
+    if (restartTimerRef.current) {
+      clearTimeout(restartTimerRef.current);
+      restartTimerRef.current = null;
+    }
     if (recognitionRef.current) {
+      const rec = recognitionRef.current;
+      recognitionRef.current = null;
+      rec.onstart = null;
+      rec.onresult = null;
+      rec.onerror = null;
+      rec.onend = null;
       try {
-        recognitionRef.current.abort();
+        rec.stop();
       } catch (e) {
-        // ignore
+        try { rec.abort(); } catch (e2) {}
       }
     }
     updateState('idle');
@@ -788,10 +879,13 @@ export function useVoiceAgent({
       const now = Date.now();
       const ctx = audioContextRef.current;
 
-      // If in speaking state but all scheduled audio has finished and no new audio packet for > 5s
+      // Never interfere if a scheduled completion timer is already active!
+      if (completionTimerRef.current) return;
+
+      // If in speaking state but all scheduled audio has finished and no new audio packet for > 6s
       if (stateRef.current === 'speaking') {
         const audioFinished = ctx ? ctx.currentTime >= nextScheduledTimeRef.current : true;
-        const noRecentAudio = now - lastAudioPacketTimeRef.current > 5000;
+        const noRecentAudio = now - lastAudioPacketTimeRef.current > 6000;
         if (audioFinished && noRecentAudio && activeSourcesRef.current.length === 0) {
           isPlayingRef.current = false;
           isAgentSpeakingRef.current = false;
@@ -804,8 +898,8 @@ export function useVoiceAgent({
         }
       }
 
-      // If in thinking state for > 12s without server response, recover gracefully
-      if (stateRef.current === 'thinking' && now - thinkingStartTimeRef.current > 12000) {
+      // If in thinking state for > 15s without server response, recover gracefully
+      if (stateRef.current === 'thinking' && now - thinkingStartTimeRef.current > 15000) {
         console.warn('Thinking timeout, recovering...');
         updateState('idle');
         setInterimText('');
