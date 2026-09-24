@@ -74,6 +74,7 @@ class ChatService:
         reply_text = ""
         # Check for function calls
         if response.function_calls:
+            tool_parts = []
             for call in response.function_calls:
                 call_name = call.name
                 call_args = call.args or {}
@@ -82,30 +83,25 @@ class ChatService:
                 if tool_res.get("ui_event"):
                     ui_events.append(tool_res["ui_event"])
 
-                # Provide function response back to Gemini to complete sentence
-                tool_content = types.Content(
-                    role="user",
-                    parts=[
-                        types.Part.from_function_response(
-                            name=call_name,
-                            response={"result": tool_res.get("result")}
-                        )
-                    ]
-                )
-                # Second turn with tool result
+                tool_parts.append(types.Part.from_function_response(
+                    name=call_name,
+                    response={"result": tool_res.get("result")}
+                ))
+
+            if tool_parts:
                 follow_up = self.client.models.generate_content(
                     model=GEMINI_CHAT_MODEL,
-                    contents=[*contents, response.candidates[0].content, tool_content],
+                    contents=[*contents, response.candidates[0].content, types.Content(role="user", parts=tool_parts)],
                     config=types.GenerateContentConfig(
                         system_instruction=SYSTEM_INSTRUCTION,
                         temperature=0.7
                     )
                 )
                 if follow_up.text:
-                    reply_text += " " + follow_up.text
+                    reply_text = follow_up.text.strip()
         
         if not reply_text and response.text:
-            reply_text = response.text
+            reply_text = response.text.strip()
 
         return {
             "reply": reply_text.strip(),

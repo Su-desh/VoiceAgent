@@ -123,6 +123,12 @@ async def websocket_live_endpoint(websocket: WebSocket, session_id: str):
             "message": "Gemini Live direct connection not configured. Client will use seamless voice synthesis fallback.",
             "mode": "FALLBACK_AUDIO"
         })
+    else:
+        await websocket.send_json({
+            "type": "SYSTEM_INFO",
+            "message": "Connected to Gemini Live Multimodal Engine (Puck).",
+            "mode": "GEMINI_LIVE"
+        })
 
     try:
         while True:
@@ -176,7 +182,11 @@ async def websocket_live_endpoint(websocket: WebSocket, session_id: str):
                     "result": res
                 })
 
-            # 4. Fresh Start / Reset session command
+            # 4. Ping keepalive from frontend
+            elif msg_type == "PING":
+                await websocket.send_json({"type": "PONG"})
+
+            # 5. Fresh Start / Reset session command
             elif msg_type == "RESET_SESSION":
                 session = reset_session(session_id)
                 await bridge.reset()

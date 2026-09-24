@@ -53,3 +53,27 @@ def test_pincode_estimate():
     metro_res = estimate_delivery("110001")
     assert metro_res["valid"] is True
     assert metro_res["tier"] == "Metro Express"
+
+def test_live_bridge_instantiation():
+    from gemini_live import GeminiLiveBridge
+    async def dummy_callback(data): pass
+    bridge = GeminiLiveBridge("test-session", dummy_callback)
+    assert bridge.session_id == "test-session"
+    assert bridge.is_connected is False
+
+def test_execute_multiple_tools():
+    session = get_session("multi-tool-test")
+    # 1. Add item
+    res1 = execute_tool("add_to_cart", {"product_id": "dw-01", "quantity": 1}, "multi-tool-test")
+    assert res1["result"]["success"] is True
+    assert res1["ui_event"]["type"] == "CART_UPDATED"
+    # 2. Highlight product
+    res2 = execute_tool("highlight_product", {"product_id": "dw-01"}, "multi-tool-test")
+    assert res2["result"]["found"] is True
+    assert res2["ui_event"]["type"] == "SPOTLIGHT_PRODUCT"
+    # 3. Apply coupon
+    res3 = execute_tool("apply_festive_coupon", {"coupon_code": "DIWALI20"}, "multi-tool-test")
+    assert res3["result"]["success"] is True
+    assert res3["ui_event"]["type"] == "COUPON_APPLIED"
+    summary = session.get_summary()
+    assert summary["discount_amount"] > 0

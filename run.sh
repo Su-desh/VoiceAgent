@@ -18,7 +18,7 @@ fi
 
 # 1. Start FastAPI backend on port 8000
 echo "🚀 Starting FastAPI server on http://localhost:8000..."
-"$DIR/server/venv/bin/python" -m uvicorn main:app --app-dir "$DIR/server" --host 0.0.0.0 --port 8000 &
+"$DIR/server/venv/bin/python" -m uvicorn main:app --app-dir "$DIR/server" --host 0.0.0.0 --port 8000 --reload &
 BACKEND_PID=$!
 
 # Trap signals to clean up background processes

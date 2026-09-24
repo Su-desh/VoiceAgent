@@ -1,7 +1,11 @@
 import os
+from pathlib import Path
 from dotenv import load_dotenv
 
-# Load .env file
+# Load .env file from server directory and current directory
+server_env = Path(__file__).resolve().parent / ".env"
+if server_env.exists():
+    load_dotenv(dotenv_path=server_env)
 load_dotenv()
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")

@@ -129,9 +129,9 @@ export const AudioVisualizer: React.FC<AudioVisualizerProps> = ({ state, audioLe
         );
       case 'speaking':
         return (
-          <div className="flex items-center gap-2 px-4 py-1.5 rounded-full bg-emerald-500/20 border border-emerald-400/40 text-emerald-300 text-sm font-medium shadow-lg shadow-emerald-900/30">
+          <div className="flex items-center gap-2 px-4 py-1.5 rounded-full bg-emerald-500/20 border border-emerald-400/40 text-emerald-300 text-sm font-medium shadow-lg shadow-emerald-900/30 group-hover:border-emerald-300 cursor-pointer transition-colors">
             <Volume2 className="w-4 h-4 text-emerald-400 animate-bounce" />
-            <span>Aarav is speaking</span>
+            <span>Aarav is speaking • Tap to interrupt</span>
           </div>
         );
       default:

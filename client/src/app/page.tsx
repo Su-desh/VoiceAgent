@@ -365,9 +365,16 @@ export default function Home() {
 
           {/* Live Speech Interim Transcription Bubble */}
           {interimText && (
-            <div className="mt-3 px-4 py-2 rounded-2xl bg-slate-900/90 border border-amber-400/60 shadow-lg shadow-amber-900/30 text-amber-200 text-xs font-medium flex items-center gap-2 animate-in fade-in zoom-in-95 max-w-md">
+            <div className="mt-3 px-4 py-2 rounded-2xl bg-slate-900/90 border border-amber-400/60 shadow-lg shadow-amber-900/30 text-amber-200 text-xs font-medium flex items-center gap-3 animate-in fade-in zoom-in-95 max-w-md">
               <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping flex-shrink-0" />
-              <span className="italic truncate">&ldquo;{interimText}&rdquo;</span>
+              <span className="italic truncate flex-1">&ldquo;{interimText}&rdquo;</span>
+              <button
+                onClick={() => sendUserPrompt(interimText)}
+                className="px-2.5 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-[11px] shadow transition-all flex items-center gap-1 flex-shrink-0 cursor-pointer"
+              >
+                <span>Send</span>
+                <Send className="w-3 h-3" />
+              </button>
             </div>
           )}
         </div>
