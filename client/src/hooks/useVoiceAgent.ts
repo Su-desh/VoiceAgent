@@ -69,6 +69,19 @@ export function useVoiceAgent({
   const lastAudioPacketTimeRef = useRef<number>(0);
   const thinkingStartTimeRef = useRef<number>(0);
 
+  // Unique session ID per visitor to ensure isolated carts and voice streams in production
+  const sessionIdRef = useRef<string>('default');
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      let sid = sessionStorage.getItem('diwali_voice_session_id');
+      if (!sid) {
+        sid = 'sess_' + Math.random().toString(36).substring(2, 10);
+        sessionStorage.setItem('diwali_voice_session_id', sid);
+      }
+      sessionIdRef.current = sid;
+    }
+  }, []);
+
   // Speech Recognition state
   const recognitionRef = useRef<any>(null);
   const isRecognitionRunningRef = useRef<boolean>(false);
@@ -456,7 +469,7 @@ export function useVoiceAgent({
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               message: text,
-              session_id: 'default',
+              session_id: sessionIdRef.current,
               history
             })
           });
@@ -529,7 +542,7 @@ export function useVoiceAgent({
 
     const connectWebSocket = () => {
       if (typeof window === 'undefined' || isUnmounted) return;
-      const wsUrl = getWsUrl('default');
+      const wsUrl = getWsUrl(sessionIdRef.current);
 
       try {
         ws = new WebSocket(wsUrl);
@@ -965,7 +978,7 @@ export function useVoiceAgent({
       await fetch(`${getApiUrl()}/api/session/reset`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: 'default' })
+        body: JSON.stringify({ session_id: sessionIdRef.current })
       });
     } catch (e) {
       // ignore
